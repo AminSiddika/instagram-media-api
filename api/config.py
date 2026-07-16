@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # Authentication
+    # Base64-encoded AES key (16, 24, or 32 bytes). Generate with api.auth.generate_aes_key()
+    aes_key: str = os.getenv("AES_KEY", "")
+    # Static master key that never expires and has admin access
+    master_api_key: str = os.getenv("MASTER_API_KEY", "")
+    # Default expiry for issued keys (hours)
+    default_key_ttl_hours: int = int(os.getenv("DEFAULT_KEY_TTL_HOURS", "24"))
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -7,6 +7,8 @@ A professional, production-ready FastAPI service that extracts high-resolution p
 - Extract images and videos from Instagram posts, Reels, and carousels
 - Author, username, title, and caption parsing
 - Proxied media endpoint to avoid CORS/referer issues
+- **AES-encrypted API keys with expiry**
+- **Static master key for owner/admin access (no expiry)**
 - Pydantic request/response validation
 - Structured logging and clear error responses
 - CORS support
@@ -15,14 +17,16 @@ A professional, production-ready FastAPI service that extracts high-resolution p
 
 ## Live Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Landing page |
-| `GET /docs` | Swagger UI |
-| `GET /redoc` | ReDoc documentation |
-| `GET /api/health` | Health check |
-| `GET /api/fetch?url=<instagram-url>` | Extract media and metadata |
-| `GET /api/proxy?url=<media-url>` | Proxy a media file |
+| Endpoint | Description | Auth |
+|----------|-------------|------|
+| `GET /` | Landing page | No |
+| `GET /docs` | Swagger UI | No |
+| `GET /redoc` | ReDoc documentation | No |
+| `GET /api/health` | Health check | No |
+| `POST /api/auth/issue-key` | Issue encrypted API key | Master key |
+| `GET /api/auth/verify-key` | Verify API key | Any key |
+| `GET /api/fetch?url=<instagram-url>` | Extract media and metadata | API key |
+| `GET /api/proxy?url=<media-url>` | Proxy a media file | API key |
 
 ## Quick Start
 
@@ -86,6 +90,57 @@ Configuration is loaded from environment variables:
 | `IMPERSONATE_BROWSER` | `chrome120` | curl_cffi browser profile |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `AES_KEY` | — | Base64-encoded AES key (16/24/32 bytes) |
+| `MASTER_API_KEY` | — | Static owner key; never expires |
+| `DEFAULT_KEY_TTL_HOURS` | `24` | Default lifetime for issued keys |
+
+### Authentication
+
+All extraction endpoints require an API key. Keys are accepted via:
+
+- `X-API-Key: <token>` header
+- `Authorization: Bearer <token>` header
+- `?api_key=<token>` query parameter
+
+#### Master Key
+
+Set `MASTER_API_KEY` to a strong random string. It never expires and has admin access.
+
+#### Issued Keys
+
+Use the master key to issue temporary encrypted keys:
+
+```bash
+# Issue a 1-hour key
+curl -X POST "https://your-domain.com/api/auth/issue-key" \
+  -H "X-API-Key: $MASTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "user", "ttl_hours": 1}'
+```
+
+Response:
+
+```json
+{
+  "api_key": "<encrypted-token>",
+  "expires_at": 1712345678,
+  "role": "user",
+  "key_id": "usr_xxx"
+}
+```
+
+Use the returned `api_key` for subsequent requests:
+
+```bash
+curl "https://your-domain.com/api/fetch?url=<instagram-url>" \
+  -H "X-API-Key: <encrypted-token>"
+```
+
+#### Generating an AES Key
+
+```bash
+python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
+```
 
 ## Project Structure
 

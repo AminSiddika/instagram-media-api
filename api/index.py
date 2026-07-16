@@ -1,15 +1,30 @@
 """FastAPI application entry point for Vercel serverless deployment."""
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from api.auth import (
+    AuthError,
+    ExpiredKeyError,
+    InvalidKeyError,
+    issue_api_key,
+    validate_api_key,
+)
 from api.config import get_settings
 from api.extractor import ExtractionError, extract_instagram_post
-from api.models import ErrorResponse, HealthResponse, InstagramPostResponse
+from api.models import (
+    ErrorResponse,
+    HealthResponse,
+    InstagramPostResponse,
+    IssueKeyRequest,
+    IssueKeyResponse,
+    VerifyKeyResponse,
+)
 
 # Configure logging
 settings = get_settings()
@@ -36,13 +51,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def get_api_key(
+    request: Request,
+    authorization: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> Optional[str]:
+    """Extract the API key from Authorization header or X-API-Key header."""
+    if authorization:
+        return authorization.credentials
+    if x_api_key:
+        return x_api_key
+    # Fallback to query param for easy browser testing
+    return request.query_params.get("api_key")
+
+
+async def require_api_key(api_key: Optional[str] = Depends(get_api_key)) -> dict:
+    """Dependency that validates the API key and returns its payload."""
+    try:
+        return validate_api_key(api_key, settings)
+    except ExpiredKeyError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except InvalidKeyError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except AuthError as exc:
+        logger.error("Auth configuration error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+async def require_master_key(api_key: Optional[str] = Depends(get_api_key)) -> dict:
+    """Dependency that requires the static master key."""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key is missing")
+    if not settings.master_api_key or api_key != settings.master_api_key:
+        raise HTTPException(status_code=403, detail="Master key required")
+    return {
+        "kid": "master",
+        "role": "admin",
+        "exp": None,
+        "type": "master",
+    }
+
 
 @app.exception_handler(ExtractionError)
 async def extraction_error_handler(_: Any, exc: ExtractionError) -> JSONResponse:
-    """Return a clean 400/500 response for extraction failures."""
+    """Return a clean 400 response for extraction failures."""
     logger.warning("Extraction error: %s", exc)
     return JSONResponse(
         status_code=400,
+        content={"detail": str(exc)},
+    )
+
+
+@app.exception_handler(AuthError)
+async def auth_error_handler(_: Any, exc: AuthError) -> JSONResponse:
+    """Return a clean 500 response for auth configuration failures."""
+    logger.error("Auth error: %s", exc)
+    return JSONResponse(
+        status_code=500,
         content={"detail": str(exc)},
     )
 
@@ -119,10 +187,75 @@ async def health_check() -> HealthResponse:
     return HealthResponse(status="ok", version=settings.app_version)
 
 
+@app.post(
+    "/api/auth/issue-key",
+    response_model=IssueKeyResponse,
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
+    summary="Issue a new encrypted API key",
+    tags=["Authentication"],
+)
+async def issue_key(
+    body: IssueKeyRequest,
+    _: dict = Depends(require_master_key),
+) -> IssueKeyResponse:
+    """Generate an AES-encrypted API key with expiry (master key required)."""
+    try:
+        token = issue_api_key(
+            settings,
+            role=body.role,
+            ttl_hours=body.ttl_hours,
+            key_id=body.key_id,
+        )
+        # Decode to extract metadata for the response
+        payload = validate_api_key(token, settings)
+        return IssueKeyResponse(
+            api_key=token,
+            expires_at=payload["exp"],
+            role=payload["role"],
+            key_id=payload["kid"],
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/auth/verify-key",
+    response_model=VerifyKeyResponse,
+    responses={401: {"model": ErrorResponse}},
+    summary="Verify an API key",
+    tags=["Authentication"],
+)
+async def verify_key(
+    api_key: Optional[str] = Depends(get_api_key),
+) -> VerifyKeyResponse:
+    """Check whether the provided API key is valid and not expired."""
+    try:
+        payload = validate_api_key(api_key, settings)
+        return VerifyKeyResponse(
+            valid=True,
+            key_id=payload["kid"],
+            role=payload["role"],
+            expires_at=payload.get("exp"),
+            type=payload.get("type", "issued"),
+        )
+    except ExpiredKeyError:
+        return VerifyKeyResponse(
+            valid=False, key_id="", role="", expires_at=None, type="expired"
+        )
+    except InvalidKeyError:
+        return VerifyKeyResponse(
+            valid=False, key_id="", role="", expires_at=None, type="invalid"
+        )
+
+
 @app.get(
     "/api/fetch",
     response_model=InstagramPostResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
     summary="Extract Instagram media",
     tags=["Extraction"],
 )
@@ -131,7 +264,8 @@ async def fetch_media(
         ...,
         description="Public Instagram post, Reel, or IGTV URL",
         examples=["https://www.instagram.com/p/ABC123xyz/"],
-    )
+    ),
+    _: dict = Depends(require_api_key),
 ) -> InstagramPostResponse:
     """Fetch media URLs and metadata for a public Instagram post."""
     try:
@@ -148,7 +282,11 @@ async def fetch_media(
 
 @app.get(
     "/api/proxy",
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
     summary="Proxy a media file",
     tags=["Extraction"],
 )
@@ -156,7 +294,8 @@ async def proxy_media(
     url: str = Query(
         ...,
         description="Direct URL of the media file to proxy",
-    )
+    ),
+    _: dict = Depends(require_api_key),
 ) -> Response:
     """Proxy an Instagram media file to avoid CORS and referer issues."""
     if not url.startswith(("http://", "https://")):

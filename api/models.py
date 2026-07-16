@@ -34,3 +34,24 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+class IssueKeyRequest(BaseModel):
+    role: str = Field(default="user", description="Role assigned to the key")
+    ttl_hours: int = Field(default=24, ge=1, le=8760, description="Key lifetime in hours")
+    key_id: Optional[str] = Field(default=None, description="Optional custom key identifier")
+
+
+class IssueKeyResponse(BaseModel):
+    api_key: str = Field(..., description="Encrypted API key")
+    expires_at: int = Field(..., description="Unix timestamp when the key expires")
+    role: str = Field(..., description="Assigned role")
+    key_id: str = Field(..., description="Key identifier")
+
+
+class VerifyKeyResponse(BaseModel):
+    valid: bool = Field(..., description="Whether the key is valid")
+    key_id: str = Field(..., description="Key identifier")
+    role: str = Field(..., description="Assigned role")
+    expires_at: Optional[int] = Field(None, description="Unix expiry timestamp (null for master)")
+    type: str = Field(..., description="Key type: master or issued")
