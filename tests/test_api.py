@@ -16,11 +16,13 @@ os.environ["FAILED_AUTH_WINDOW_SECONDS"] = "300"
 
 from api.config import get_settings
 from api.index import app
+from api.security import get_revocation_store
 
 
 @pytest.fixture(autouse=True)
-def reset_settings_cache():
+def reset_state():
     get_settings.cache_clear()
+    get_revocation_store().clear()
 
 
 client = TestClient(app)
@@ -74,6 +76,34 @@ class TestAuthEndpoints:
         )
         assert response.status_code == 200
         assert response.json()["valid"] is False
+
+    def test_single_use_key_rotates(self):
+        # Issue a single-use key
+        issue_resp = client.post(
+            "/api/auth/issue-key",
+            json={"role": "user", "ttl_hours": 1, "single_use": True},
+            headers={"X-API-Key": "test-master-key"},
+        )
+        assert issue_resp.status_code == 200
+        token = issue_resp.json()["api_key"]
+
+        # Use it once
+        first = client.get("/api/auth/verify-key", headers={"X-API-Key": token})
+        assert first.status_code == 200
+        assert first.json()["valid"] is True
+        assert "X-New-API-Key" in first.headers
+
+        new_token = first.headers["X-New-API-Key"]
+
+        # Old token should now be rejected
+        second = client.get("/api/auth/verify-key", headers={"X-API-Key": token})
+        assert second.status_code == 200
+        assert second.json()["valid"] is False
+
+        # New token should be valid
+        third = client.get("/api/auth/verify-key", headers={"X-API-Key": new_token})
+        assert third.status_code == 200
+        assert third.json()["valid"] is True
 
 
 class TestProtectedEndpoints:

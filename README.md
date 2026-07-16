@@ -8,6 +8,7 @@ A professional, production-ready FastAPI service that extracts high-resolution p
 - Author, username, title, and caption parsing
 - Proxied media endpoint to avoid CORS/referer issues
 - **AES-encrypted API keys with expiry**
+- **Single-use rolling keys: a new key is issued after every request**
 - **Static master key for owner/admin access (no expiry)**
 - **Per-key/IP rate limiting and brute-force protection**
 - **Security headers, request ID tracking, and sanitized logging**
@@ -140,6 +141,33 @@ Use the returned `api_key` for subsequent requests:
 ```bash
 curl "https://your-domain.com/api/fetch?url=<instagram-url>" \
   -H "X-API-Key: <encrypted-token>"
+```
+
+#### Single-Use Rolling Keys
+
+By default, issued keys are **single-use**. After each authenticated request, a new key is returned in the `X-New-API-Key` response header and the old key is revoked.
+
+```bash
+# First request
+curl "https://your-domain.com/api/fetch?url=<instagram-url>" \
+  -H "X-API-Key: <token-1>" \
+  -D headers.txt
+
+# Extract the new key for the next request
+TOKEN_2=$(grep -i "X-New-API-Key" headers.txt | awk '{print $2}' | tr -d '\r')
+
+# Second request must use the new key
+curl "https://your-domain.com/api/fetch?url=<instagram-url>" \
+  -H "X-API-Key: $TOKEN_2"
+```
+
+To issue a reusable key, set `single_use: false`:
+
+```bash
+curl -X POST "https://your-domain.com/api/auth/issue-key" \
+  -H "X-API-Key: $MASTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "user", "ttl_hours": 24, "single_use": false}'
 ```
 
 #### Generating an AES Key

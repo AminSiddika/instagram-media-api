@@ -38,6 +38,7 @@ class TestKeyIssuance:
         assert payload["kid"].startswith("usr_")
         assert payload["type"] == "issued"
         assert payload["exp"] is not None
+        assert payload.get("single_use", True) is True
 
     def test_issue_key_with_custom_id(self, settings):
         token = issue_api_key(settings, role="user", ttl_hours=1, key_id="abc123")
@@ -48,6 +49,11 @@ class TestKeyIssuance:
         token = issue_api_key(settings, role="user", ttl_hours=-1)
         with pytest.raises(ExpiredKeyError):
             validate_api_key(token, settings)
+
+    def test_issue_non_single_use_key(self, settings):
+        token = issue_api_key(settings, role="user", ttl_hours=1, single_use=False)
+        payload = validate_api_key(token, settings)
+        assert payload.get("single_use") is False
 
 
 class TestMasterKey:

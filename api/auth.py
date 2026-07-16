@@ -123,11 +123,14 @@ def decrypt_token(token: str, aes_key: bytes) -> dict:
         raise InvalidKeyError(f"Could not decrypt API key: {exc}") from exc
 
 
-def validate_api_key(token: Optional[str], settings: Settings) -> dict:
+def validate_api_key(
+    token: Optional[str], settings: Settings, revoked_kids: Optional[set] = None
+) -> dict:
     """Validate an API key.
 
     Returns the decrypted payload if valid. The master key is checked first
-    and never expires.
+    and never expires. Optionally checks a set of revoked key IDs for
+    single-use rotation.
     """
     if not token:
         raise InvalidKeyError("API key is missing")
@@ -138,6 +141,7 @@ def validate_api_key(token: Optional[str], settings: Settings) -> dict:
             "role": "admin",
             "exp": None,
             "type": "master",
+            "single_use": False,
         }
 
     aes_key = _decode_key(settings.aes_key)
@@ -147,6 +151,10 @@ def validate_api_key(token: Optional[str], settings: Settings) -> dict:
         raise AuthError("AES key must be 16, 24, or 32 bytes (base64 encoded)")
 
     payload = decrypt_token(token, aes_key)
+    kid = payload.get("kid")
+    if revoked_kids and kid in revoked_kids:
+        raise InvalidKeyError("API key has already been used")
+
     exp = payload.get("exp")
     if exp is not None and int(time.time()) > exp:
         raise ExpiredKeyError("API key has expired")
@@ -159,10 +167,12 @@ def issue_api_key(
     role: str = "user",
     ttl_hours: int = 24,
     key_id: Optional[str] = None,
+    single_use: bool = True,
 ) -> str:
     """Issue a new encrypted API key with an expiry.
 
-    A random IV is generated automatically for each issued key.
+    A random IV is generated automatically for each issued key. Single-use
+    keys are intended to be rotated after every request.
     """
     aes_key = _decode_key(settings.aes_key)
     if not aes_key:
@@ -174,7 +184,13 @@ def issue_api_key(
     exp = int(
         (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).timestamp()
     )
-    payload = {"kid": kid, "role": role, "exp": exp, "type": "issued"}
+    payload = {
+        "kid": kid,
+        "role": role,
+        "exp": exp,
+        "type": "issued",
+        "single_use": single_use,
+    }
     return encrypt_payload(payload, aes_key)
 
 

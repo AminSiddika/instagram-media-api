@@ -32,6 +32,7 @@ from api.security import (
     is_private_ip,
     log_request,
     record_failed_auth,
+    validate_and_maybe_rotate,
 )
 
 # Configure logging
@@ -99,19 +100,15 @@ async def get_api_key(
 
 async def require_api_key(
     request: Request,
+    response: Response,
     api_key: Optional[str] = Depends(get_api_key),
 ) -> dict:
-    """Dependency that validates the API key, enforces rate limits, and returns payload."""
-    check_rate_limit(api_key, request, settings)
+    """Dependency that validates the API key, enforces rate limits, rotates single-use keys, and returns payload."""
     try:
-        payload = validate_api_key(api_key, settings)
-        log_request(request, api_key, status="authenticated")
-        return payload
+        return validate_and_maybe_rotate(api_key, request, response, settings)
     except ExpiredKeyError as exc:
-        record_failed_auth(api_key, request, settings)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except InvalidKeyError as exc:
-        record_failed_auth(api_key, request, settings)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except AuthError as exc:
         logger.error("Auth configuration error: %s", exc)
@@ -251,6 +248,7 @@ async def issue_key(
             role=body.role,
             ttl_hours=body.ttl_hours,
             key_id=body.key_id,
+            single_use=body.single_use,
         )
         # Decode to extract metadata for the response
         payload = validate_api_key(token, settings)
@@ -259,6 +257,7 @@ async def issue_key(
             expires_at=payload["exp"],
             role=payload["role"],
             key_id=payload["kid"],
+            single_use=payload.get("single_use", True),
         )
     except AuthError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -273,28 +272,41 @@ async def issue_key(
 )
 async def verify_key(
     request: Request,
+    response: Response,
     api_key: Optional[str] = Depends(get_api_key),
 ) -> VerifyKeyResponse:
-    """Check whether the provided API key is valid and not expired."""
+    """Check whether the provided API key is valid and not expired.
+
+    Single-use keys are rotated automatically and the new key is returned in
+    the X-New-API-Key response header.
+    """
     try:
-        payload = validate_api_key(api_key, settings)
-        log_request(request, api_key, status="verify_ok")
+        payload = validate_and_maybe_rotate(api_key, request, response, settings)
         return VerifyKeyResponse(
             valid=True,
             key_id=payload["kid"],
             role=payload["role"],
             expires_at=payload.get("exp"),
             type=payload.get("type", "issued"),
+            single_use=payload.get("single_use", True),
         )
     except ExpiredKeyError:
-        record_failed_auth(api_key, request, settings)
         return VerifyKeyResponse(
-            valid=False, key_id="", role="", expires_at=None, type="expired"
+            valid=False,
+            key_id="",
+            role="",
+            expires_at=None,
+            type="expired",
+            single_use=None,
         )
     except InvalidKeyError:
-        record_failed_auth(api_key, request, settings)
         return VerifyKeyResponse(
-            valid=False, key_id="", role="", expires_at=None, type="invalid"
+            valid=False,
+            key_id="",
+            role="",
+            expires_at=None,
+            type="invalid",
+            single_use=None,
         )
 
 
