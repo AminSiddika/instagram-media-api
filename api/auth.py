@@ -1,8 +1,11 @@
 """AES-encrypted API key authentication.
 
-API keys are encrypted JSON payloads containing a key ID, role, and expiry.
-Each issued key is encrypted with AES-256-CBC using a random IV (auto-generated
-per request) and authenticated with HMAC-SHA256.
+API keys are encrypted JSON payloads containing a key ID, role, expiry, and
+single-use flag. Each issued key is encrypted with AES-256-CBC using a random
+IV (auto-generated per request) and authenticated with HMAC-SHA256.
+
+Uses the pure-Python `pyaes` library to avoid native extension build issues on
+serverless platforms like Vercel.
 
 A static `MASTER_API_KEY` can be set in the environment. It bypasses expiry
 and grants full admin access.
@@ -18,8 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import pyaes
 
 from api.config import Settings
 
@@ -71,6 +73,18 @@ def _unpad(data: bytes) -> bytes:
     return data[:-pad_len]
 
 
+def _aes_cbc_encrypt(data: bytes, aes_key: bytes, iv: bytes) -> bytes:
+    """Encrypt data with AES-256-CBC using pyaes."""
+    aes = pyaes.AESModeOfOperationCBC(aes_key, iv=iv)
+    return aes.encrypt(data)
+
+
+def _aes_cbc_decrypt(ciphertext: bytes, aes_key: bytes, iv: bytes) -> bytes:
+    """Decrypt data with AES-256-CBC using pyaes."""
+    aes = pyaes.AESModeOfOperationCBC(aes_key, iv=iv)
+    return aes.decrypt(ciphertext)
+
+
 def encrypt_payload(payload: dict, aes_key: bytes, iv: Optional[bytes] = None) -> str:
     """Encrypt a JSON payload with AES-256-CBC + HMAC-SHA256.
 
@@ -78,11 +92,7 @@ def encrypt_payload(payload: dict, aes_key: bytes, iv: Optional[bytes] = None) -
     """
     iv = iv or os.urandom(16)
     data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    cipher = Cipher(
-        algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend()
-    )
-    encryptor = cipher.encryptor()
-    ciphertext = encryptor.update(_pad(data)) + encryptor.finalize()
+    ciphertext = _aes_cbc_encrypt(_pad(data), aes_key, iv)
 
     mac_key = _derive_hmac_key(aes_key)
     mac = hmac.new(mac_key, iv + ciphertext, hashlib.sha256).digest()
@@ -112,11 +122,7 @@ def decrypt_token(token: str, aes_key: bytes) -> dict:
         raise InvalidKeyError("Invalid API key signature")
 
     try:
-        cipher = Cipher(
-            algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend()
-        )
-        decryptor = cipher.decryptor()
-        padded = decryptor.update(ciphertext) + decryptor.finalize()
+        padded = _aes_cbc_decrypt(ciphertext, aes_key, iv)
         data = _unpad(padded)
         return json.loads(data.decode())
     except Exception as exc:
