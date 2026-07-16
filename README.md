@@ -9,6 +9,8 @@ A professional, production-ready FastAPI service that extracts high-resolution p
 - Proxied media endpoint to avoid CORS/referer issues
 - **AES-encrypted API keys with expiry**
 - **Static master key for owner/admin access (no expiry)**
+- **Per-key/IP rate limiting and brute-force protection**
+- **Security headers, request ID tracking, and sanitized logging**
 - Pydantic request/response validation
 - Structured logging and clear error responses
 - CORS support
@@ -34,7 +36,7 @@ A professional, production-ready FastAPI service that extracts high-resolution p
 
 ```bash
 # Clone the repository
-git clone https://github.com/Mobius/instagram-media-api.git
+git clone https://github.com/AminSiddika/instagram-media-api.git
 cd instagram-media-api
 
 # Create a virtual environment
@@ -93,6 +95,10 @@ Configuration is loaded from environment variables:
 | `AES_KEY` | — | Base64-encoded AES key (16/24/32 bytes) |
 | `MASTER_API_KEY` | — | Static owner key; never expires |
 | `DEFAULT_KEY_TTL_HOURS` | `24` | Default lifetime for issued keys |
+| `RATE_LIMIT_REQUESTS` | `30` | Max requests per key/IP per window |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window in seconds |
+| `MAX_FAILED_AUTH_ATTEMPTS` | `10` | Max failed auth attempts per IP window |
+| `FAILED_AUTH_WINDOW_SECONDS` | `300` | Failed-auth block window in seconds |
 
 ### Authentication
 
@@ -142,18 +148,30 @@ curl "https://your-domain.com/api/fetch?url=<instagram-url>" \
 python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
+### Security Hardening
+
+- **Never commit secrets.** `AES_KEY` and `MASTER_API_KEY` must be set via environment variables. The code refuses to run extraction/auth if they are missing.
+- **Rate limiting:** Each API key + IP combination is limited to `RATE_LIMIT_REQUESTS` per window (default 30/min).
+- **Brute-force protection:** More than `MAX_FAILED_AUTH_ATTEMPTS` failed attempts from the same IP in the window returns 403.
+- **Sanitized logging:** API keys are never logged. Only a SHA-256 fingerprint is recorded.
+- **Security headers:** All responses include `X-Content-Type-Options`, `X-Frame-Options`, and `Referrer-Policy`.
+- **Request IDs:** Every response has an `X-Request-ID` header for tracing abuse.
+
 ## Project Structure
 
 ```
 instagram-media-api/
 ├── api/
 │   ├── __init__.py
+│   ├── auth.py            # AES encryption and key validation
 │   ├── config.py          # Settings and environment variables
 │   ├── extractor.py       # Instagram scraping logic
 │   ├── index.py           # FastAPI entry point
-│   └── models.py          # Pydantic schemas
+│   ├── models.py          # Pydantic schemas
+│   └── security.py        # Rate limiting and abuse logging
 ├── tests/
 │   ├── test_api.py
+│   ├── test_auth.py
 │   └── test_extractor.py
 ├── .github/
 │   └── workflows/

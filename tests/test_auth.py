@@ -5,6 +5,11 @@ import os
 
 import pytest
 
+os.environ["AES_KEY"] = base64.b64encode(b"a" * 32).decode()
+os.environ["MASTER_API_KEY"] = "test-master-key"
+os.environ["RATE_LIMIT_REQUESTS"] = "10000"
+os.environ["MAX_FAILED_AUTH_ATTEMPTS"] = "10000"
+
 from api.auth import (
     AuthError,
     ExpiredKeyError,

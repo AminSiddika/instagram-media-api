@@ -21,16 +21,19 @@ class Settings(BaseSettings):
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
     # Authentication
-    # NOTE: Hardcoded defaults are used for zero-config deployment.
-    # For production, override with AES_KEY and MASTER_API_KEY env vars.
-    aes_key: str = os.getenv(
-        "AES_KEY",
-        "1rta1P1hgoNS2le+Gk9hUvHUPNJ9sUq4vHRpzNa0rZU=",
-    )
+    # These MUST be set via environment variables. Never commit real secrets.
+    aes_key: str = os.getenv("AES_KEY", "")
     # Static master key that never expires and has admin access
-    master_api_key: str = os.getenv("MASTER_API_KEY", "@JalebiBae")
+    master_api_key: str = os.getenv("MASTER_API_KEY", "")
     # Default expiry for issued keys (hours)
     default_key_ttl_hours: int = int(os.getenv("DEFAULT_KEY_TTL_HOURS", "24"))
+
+    # Rate limiting
+    rate_limit_requests: int = int(os.getenv("RATE_LIMIT_REQUESTS", "30"))
+    rate_limit_window_seconds: int = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+    # Max failed auth attempts before temporary block (per IP window)
+    max_failed_auth_attempts: int = int(os.getenv("MAX_FAILED_AUTH_ATTEMPTS", "10"))
+    failed_auth_window_seconds: int = int(os.getenv("FAILED_AUTH_WINDOW_SECONDS", "300"))
 
     class Config:
         env_file = ".env"

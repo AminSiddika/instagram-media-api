@@ -1,6 +1,8 @@
 """FastAPI application entry point for Vercel serverless deployment."""
 
 import logging
+import secrets
+import time
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -25,6 +27,12 @@ from api.models import (
     IssueKeyResponse,
     VerifyKeyResponse,
 )
+from api.security import (
+    check_rate_limit,
+    is_private_ip,
+    log_request,
+    record_failed_auth,
+)
 
 # Configure logging
 settings = get_settings()
@@ -33,6 +41,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Validate critical configuration at startup
+if not settings.aes_key:
+    logger.warning("AES_KEY is not set. Auth endpoints will fail until it is configured.")
+if not settings.master_api_key:
+    logger.warning("MASTER_API_KEY is not set. Master-only endpoints will be unreachable.")
 
 app = FastAPI(
     title=settings.app_name,
@@ -54,6 +68,21 @@ app.add_middleware(
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add request ID and security headers to every response."""
+    request_id = request.headers.get("x-request-id") or secrets.token_hex(8)
+    start = time.time()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Remove server header if present
+    response.headers.pop("server", None)
+    return response
+
+
 async def get_api_key(
     request: Request,
     authorization: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
@@ -64,29 +93,44 @@ async def get_api_key(
         return authorization.credentials
     if x_api_key:
         return x_api_key
-    # Fallback to query param for easy browser testing
+    # Fallback to query param for easy browser testing (not recommended in production)
     return request.query_params.get("api_key")
 
 
-async def require_api_key(api_key: Optional[str] = Depends(get_api_key)) -> dict:
-    """Dependency that validates the API key and returns its payload."""
+async def require_api_key(
+    request: Request,
+    api_key: Optional[str] = Depends(get_api_key),
+) -> dict:
+    """Dependency that validates the API key, enforces rate limits, and returns payload."""
+    check_rate_limit(api_key, request, settings)
     try:
-        return validate_api_key(api_key, settings)
+        payload = validate_api_key(api_key, settings)
+        log_request(request, api_key, status="authenticated")
+        return payload
     except ExpiredKeyError as exc:
+        record_failed_auth(api_key, request, settings)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except InvalidKeyError as exc:
+        record_failed_auth(api_key, request, settings)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except AuthError as exc:
         logger.error("Auth configuration error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-async def require_master_key(api_key: Optional[str] = Depends(get_api_key)) -> dict:
+async def require_master_key(
+    request: Request,
+    api_key: Optional[str] = Depends(get_api_key),
+) -> dict:
     """Dependency that requires the static master key."""
+    check_rate_limit(api_key, request, settings)
     if not api_key:
+        record_failed_auth(api_key, request, settings)
         raise HTTPException(status_code=401, detail="API key is missing")
     if not settings.master_api_key or api_key != settings.master_api_key:
+        record_failed_auth(api_key, request, settings)
         raise HTTPException(status_code=403, detail="Master key required")
+    log_request(request, api_key, status="master_authenticated")
     return {
         "kid": "master",
         "role": "admin",
@@ -182,8 +226,9 @@ async def root() -> HTMLResponse:
     summary="Health check",
     tags=["Monitoring"],
 )
-async def health_check() -> HealthResponse:
+async def health_check(request: Request) -> HealthResponse:
     """Return API health status."""
+    log_request(request, status="health")
     return HealthResponse(status="ok", version=settings.app_version)
 
 
@@ -195,6 +240,7 @@ async def health_check() -> HealthResponse:
     tags=["Authentication"],
 )
 async def issue_key(
+    request: Request,
     body: IssueKeyRequest,
     _: dict = Depends(require_master_key),
 ) -> IssueKeyResponse:
@@ -226,11 +272,13 @@ async def issue_key(
     tags=["Authentication"],
 )
 async def verify_key(
+    request: Request,
     api_key: Optional[str] = Depends(get_api_key),
 ) -> VerifyKeyResponse:
     """Check whether the provided API key is valid and not expired."""
     try:
         payload = validate_api_key(api_key, settings)
+        log_request(request, api_key, status="verify_ok")
         return VerifyKeyResponse(
             valid=True,
             key_id=payload["kid"],
@@ -239,10 +287,12 @@ async def verify_key(
             type=payload.get("type", "issued"),
         )
     except ExpiredKeyError:
+        record_failed_auth(api_key, request, settings)
         return VerifyKeyResponse(
             valid=False, key_id="", role="", expires_at=None, type="expired"
         )
     except InvalidKeyError:
+        record_failed_auth(api_key, request, settings)
         return VerifyKeyResponse(
             valid=False, key_id="", role="", expires_at=None, type="invalid"
         )
@@ -254,12 +304,14 @@ async def verify_key(
     responses={
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
+        429: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
     summary="Extract Instagram media",
     tags=["Extraction"],
 )
 async def fetch_media(
+    request: Request,
     url: str = Query(
         ...,
         description="Public Instagram post, Reel, or IGTV URL",
@@ -268,15 +320,18 @@ async def fetch_media(
     _: dict = Depends(require_api_key),
 ) -> InstagramPostResponse:
     """Fetch media URLs and metadata for a public Instagram post."""
+    log_request(request, status="fetch_start")
     try:
-        return extract_instagram_post(url, settings)
+        result = extract_instagram_post(url, settings)
+        log_request(request, status="fetch_ok")
+        return result
     except ExtractionError:
         raise
     except Exception as exc:
         logger.exception("Unexpected error during extraction")
         raise HTTPException(
             status_code=500,
-            detail=f"An unexpected error occurred: {exc}",
+            detail="An unexpected error occurred while processing the request.",
         ) from exc
 
 
@@ -285,12 +340,14 @@ async def fetch_media(
     responses={
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
+        429: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
     summary="Proxy a media file",
     tags=["Extraction"],
 )
 async def proxy_media(
+    request: Request,
     url: str = Query(
         ...,
         description="Direct URL of the media file to proxy",
@@ -313,7 +370,7 @@ async def proxy_media(
     except Exception as exc:
         logger.exception("Proxy request failed")
         raise HTTPException(
-            status_code=500, detail=f"Failed to proxy media: {exc}"
+            status_code=500, detail="Failed to proxy media."
         ) from exc
 
     content_type = response.headers.get("content-type", "application/octet-stream")
