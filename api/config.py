@@ -21,10 +21,14 @@ class Settings(BaseSettings):
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
     # Authentication
-    # Base64-encoded AES key (16, 24, or 32 bytes). Generate with api.auth.generate_aes_key()
-    aes_key: str = os.getenv("AES_KEY", "")
+    # NOTE: Hardcoded defaults are used for zero-config deployment.
+    # For production, override with AES_KEY and MASTER_API_KEY env vars.
+    aes_key: str = os.getenv(
+        "AES_KEY",
+        "1rta1P1hgoNS2le+Gk9hUvHUPNJ9sUq4vHRpzNa0rZU=",
+    )
     # Static master key that never expires and has admin access
-    master_api_key: str = os.getenv("MASTER_API_KEY", "")
+    master_api_key: str = os.getenv("MASTER_API_KEY", "@JalebiBae")
     # Default expiry for issued keys (hours)
     default_key_ttl_hours: int = int(os.getenv("DEFAULT_KEY_TTL_HOURS", "24"))
 
