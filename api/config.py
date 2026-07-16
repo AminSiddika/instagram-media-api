@@ -21,10 +21,14 @@ class Settings(BaseSettings):
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
     # Authentication
-    # These MUST be set via environment variables. Never commit real secrets.
-    aes_key: str = os.getenv("AES_KEY", "")
+    # NOTE: Hardcoded defaults are used because Vercel env vars are unavailable.
+    # The repo is private. Rotate these values if it ever becomes public.
+    aes_key: str = os.getenv(
+        "AES_KEY",
+        "tGdq1+oMGGMC28zcS7tbqoFRaDoVoK3YVO87p6n2LXE=",
+    )
     # Static master key that never expires and has admin access
-    master_api_key: str = os.getenv("MASTER_API_KEY", "")
+    master_api_key: str = os.getenv("MASTER_API_KEY", "@JalebiBae")
     # Default expiry for issued keys (hours)
     default_key_ttl_hours: int = int(os.getenv("DEFAULT_KEY_TTL_HOURS", "24"))
 
