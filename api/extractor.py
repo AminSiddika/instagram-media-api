@@ -247,6 +247,7 @@ def fetch_instagram_page(url: str, settings: Settings) -> str:
         ExtractionError: If the request fails or returns a non-200 status.
     """
     headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Connection": "keep-alive",
@@ -279,6 +280,76 @@ def fetch_instagram_page(url: str, settings: Settings) -> str:
     return response.text
 
 
+def _extract_from_json(html_content: str, shortcode: str) -> Tuple[List[str], List[str]]:
+    """Search for script tags containing 'xig_polaris_media' and parse JSON to extract target media URLs."""
+    import json
+    import base64
+    import urllib.parse
+
+    target_media = None
+    for match in re.finditer(r'<script[^>]*>(.*?)</script>', html_content, re.DOTALL):
+        content = match.group(1)
+        if "xig_polaris_media" in content and shortcode in content:
+            try:
+                data = json.loads(content)
+                found_media = []
+
+                def find_key(d):
+                    if isinstance(d, dict):
+                        for k, v in d.items():
+                            if k == "xig_polaris_media" and isinstance(v, dict) and v.get("code") == shortcode:
+                                found_media.append(v)
+                            else:
+                                find_key(v)
+                    elif isinstance(d, list):
+                        for item in d:
+                            find_key(item)
+
+                find_key(data)
+                if found_media:
+                    target_media = found_media[0]
+                    break
+            except:
+                pass
+
+    if not target_media:
+        return [], []
+
+    image_urls: List[str] = []
+    video_urls: List[str] = []
+    inner = target_media.get("if_not_gated_logged_out", {})
+
+    def process_media_item(item):
+        # Extract videos
+        if "video_versions" in item:
+            v_list = item.get("video_versions", [])
+            if v_list:
+                url = v_list[0].get("url")
+                if url:
+                    video_urls.append(url.replace('&amp;', '&').replace('\\/', '/'))
+        # Extract images
+        candidates = item.get("image_versions2", {}).get("candidates", [])
+        if candidates:
+            url = candidates[0].get("url")
+            if url:
+                image_urls.append(url.replace('&amp;', '&').replace('\\/', '/'))
+        elif "display_url" in item:
+            url = item.get("display_url")
+            if url:
+                image_urls.append(url.replace('&amp;', '&').replace('\\/', '/'))
+
+    if "carousel_media" in inner:
+        for item in inner["carousel_media"]:
+            process_media_item(item)
+    else:
+        process_media_item(inner)
+        # Fallbacks on main level
+        if not image_urls:
+            process_media_item(target_media)
+
+    return _deduplicate_urls(image_urls), _deduplicate_urls(video_urls)
+
+
 def extract_instagram_post(url: str, settings: Settings) -> InstagramPostResponse:
     """Main entry point: fetch and parse an Instagram post.
 
@@ -302,12 +373,22 @@ def extract_instagram_post(url: str, settings: Settings) -> InstagramPostRespons
     core_id = _extract_core_id(first_image_url)
 
     metadata = extract_metadata(meta_tags)
-    image_urls, video_urls = extract_media_urls(html_content, core_id)
+    
+    # Try parsing via JSON first to isolate target post media and fetch high-resolution files
+    try:
+        image_urls, video_urls = _extract_from_json(html_content, shortcode)
+    except Exception as json_err:
+        logger.warning(f"JSON extraction failed for shortcode {shortcode}: {json_err}")
+        image_urls, video_urls = [], []
 
-    if first_image_url:
-        image_urls_set = set(image_urls)
-        image_urls_set.add(first_image_url)
-        image_urls = _deduplicate_urls(list(image_urls_set))
+    # Fallback to regex meta tags/HTML parser if JSON extraction didn't yield results
+    if not image_urls and not video_urls:
+        logger.info("Falling back to regex/HTML media URL extraction.")
+        image_urls, video_urls = extract_media_urls(html_content, core_id)
+        if first_image_url:
+            image_urls_set = set(image_urls)
+            image_urls_set.add(first_image_url)
+            image_urls = _deduplicate_urls(list(image_urls_set))
 
     media: List[InstagramMediaItem] = []
 
