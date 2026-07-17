@@ -330,7 +330,6 @@ async def fetch_media(
         description="Public Instagram post, Reel, or IGTV URL",
         examples=["https://www.instagram.com/p/ABC123xyz/"],
     ),
-    _: dict = Depends(require_api_key),
 ) -> InstagramPostResponse:
     """Fetch media URLs and metadata for a public Instagram post."""
     log_request(request, status="fetch_start")
@@ -365,7 +364,6 @@ async def proxy_media(
         ...,
         description="Direct URL of the media file to proxy",
     ),
-    _: dict = Depends(require_api_key),
 ) -> Response:
     """Proxy an Instagram media file to avoid CORS and referer issues."""
     if not url.startswith(("http://", "https://")):
