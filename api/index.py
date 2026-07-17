@@ -104,10 +104,16 @@ async def extraction_error_handler(_: Any, exc: ExtractionError) -> JSONResponse
     )
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def root() -> HTMLResponse:
+@app.get("/", include_in_schema=False)
+async def root() -> Response:
     """Serve the upgraded landing page with direct fetch client and Mobius credits."""
-    return HTMLResponse(
+    return Response(
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        },
         content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
