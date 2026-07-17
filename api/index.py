@@ -317,10 +317,11 @@ async def verify_key(
     responses={
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
         429: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
-    summary="Extract Instagram media",
+    summary="Extract Instagram media (Master Key required)",
     tags=["Extraction"],
 )
 async def fetch_media(
@@ -330,8 +331,9 @@ async def fetch_media(
         description="Public Instagram post, Reel, or IGTV URL",
         examples=["https://www.instagram.com/p/ABC123xyz/"],
     ),
+    _: dict = Depends(require_master_key),
 ) -> InstagramPostResponse:
-    """Fetch media URLs and metadata for a public Instagram post."""
+    """Fetch media URLs and metadata for a public Instagram post (Master Key required)."""
     log_request(request, status="fetch_start")
     try:
         result = extract_instagram_post(url, settings)
@@ -348,14 +350,83 @@ async def fetch_media(
 
 
 @app.get(
+    "/api/fetch-secure",
+    response_model=InstagramPostResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        429: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+    summary="Extract Instagram media securely (AES Encrypted Payload)",
+    tags=["Extraction"],
+)
+async def fetch_media_secure(
+    request: Request,
+    payload: str = Query(
+        ...,
+        description="AES-256-CBC encrypted and HMAC signed JSON token containing 'url' and 'timestamp' keys",
+    ),
+) -> InstagramPostResponse:
+    """Fetch media URLs and metadata for a public Instagram post via an AES encrypted payload.
+    
+    The payload must be a URL-safe Base64 token containing: IV (16 bytes) + ciphertext + HMAC-SHA256 signature (32 bytes).
+    The decrypted JSON must contain:
+    - 'url': The target Instagram URL.
+    - 'timestamp': Current Unix timestamp (requests expire after 30 seconds to prevent replay attacks).
+    """
+    log_request(request, status="fetch_secure_start")
+    
+    from api.auth import decrypt_token, _decode_key
+    try:
+        aes_key = _decode_key(settings.aes_key)
+        data = decrypt_token(payload, aes_key)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid payload signature or decryption failed."
+        ) from exc
+
+    url = data.get("url")
+    timestamp = data.get("timestamp")
+
+    if not url or not timestamp:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing 'url' or 'timestamp' in decrypted payload."
+        )
+
+    current_time = int(time.time())
+    if abs(current_time - int(timestamp)) > 30:
+        raise HTTPException(
+            status_code=403,
+            detail="Request expired (timestamp out of bounds)."
+        )
+
+    try:
+        result = extract_instagram_post(url, settings)
+        log_request(request, status="fetch_secure_ok")
+        return result
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error during extraction")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while processing the request.",
+        ) from exc
+
+
+@app.get(
     "/api/proxy",
     responses={
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
         429: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
-    summary="Proxy a media file",
+    summary="Proxy a media file (Master Key required)",
     tags=["Extraction"],
 )
 async def proxy_media(
@@ -364,8 +435,9 @@ async def proxy_media(
         ...,
         description="Direct URL of the media file to proxy",
     ),
+    _: dict = Depends(require_master_key),
 ) -> Response:
-    """Proxy an Instagram media file to avoid CORS and referer issues."""
+    """Proxy an Instagram media file to avoid CORS and referer issues (Master Key required)."""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid URL scheme.")
 
