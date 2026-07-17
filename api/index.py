@@ -347,28 +347,39 @@ async def root() -> HTMLResponse:
                 
                 if (data.media && data.media.length > 0) {{
                     data.media.forEach((item, index) => {{
-                        if (item.type === 'photo') {{
-                            const card = document.createElement('div');
-                            card.className = 'image-card';
-                            
+                        const card = document.createElement('div');
+                        card.className = 'image-card';
+                        
+                        // Use proxy_url to bypass Instagram's CORS and hotlinking protections
+                        const mediaUrl = item.proxy_url || item.url;
+                        
+                        if (item.type === 'video') {{
+                            const video = document.createElement('video');
+                            video.src = mediaUrl;
+                            video.controls = true;
+                            video.style.width = '100%';
+                            video.style.height = '100%';
+                            video.style.objectFit = 'cover';
+                            card.appendChild(video);
+                        }} else {{
                             const img = document.createElement('img');
-                            img.src = item.url;
+                            img.src = mediaUrl;
                             img.alt = `Media ${{index + 1}}`;
-                            
-                            const dl = document.createElement('button');
-                            dl.className = 'dl-btn';
-                            dl.innerHTML = '⬇️';
-                            dl.onclick = () => window.open(item.url, '_blank');
-                            
                             card.appendChild(img);
-                            card.appendChild(dl);
-                            grid.appendChild(card);
                         }}
+                        
+                        const dl = document.createElement('button');
+                        dl.className = 'dl-btn';
+                        dl.innerHTML = '⬇️';
+                        dl.onclick = () => window.open(mediaUrl, '_blank');
+                        
+                        card.appendChild(dl);
+                        grid.appendChild(card);
                     }});
                     resContainer.style.display = 'block';
                 }} else {{
                     statusDiv.style.display = 'block';
-                    statusDiv.textContent = 'No images returned in post.';
+                    statusDiv.textContent = 'No media files returned.';
                 }}
 
             }} catch (error) {{
@@ -476,11 +487,13 @@ async def proxy_media(
         ) from exc
 
     content_type = response.headers.get("content-type", "application/octet-stream")
+    ext = "mp4" if "video" in content_type.lower() else "jpg"
     return Response(
         content=response.content,
         media_type=content_type,
         headers={
             "Cache-Control": "public, max-age=86400",
             "Access-Control-Allow-Origin": "*",
+            "Content-Disposition": f"attachment; filename=ig_media.{ext}"
         },
     )
