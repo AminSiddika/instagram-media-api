@@ -2,12 +2,10 @@
 
 import logging
 import secrets
-import time
-import hmac
-import hashlib
 from typing import Any, Optional
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -19,7 +17,6 @@ from api.models import (
     InstagramPostResponse,
 )
 from api.security import (
-    is_private_ip,
     log_request,
 )
 
@@ -30,9 +27,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-# Server-side ephemeral secret for session validation (regenerated on startup/instance spin-up)
-SERVER_SECRET = secrets.token_hex(32)
 
 app = FastAPI(
     title=settings.app_name,
@@ -66,6 +60,40 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+def validate_origin_and_referer(request: Request):
+    """Enforce Origin/Referer checks to protect the API from unauthorized hotlinking."""
+    referer = request.headers.get("referer")
+    origin = request.headers.get("origin")
+    
+    # Define allowed domains
+    allowed_domains = ["instagram-media-api.vercel.app", "localhost", "127.0.0.1", "localhost:3000"]
+    for org in settings.cors_origins_list:
+        parsed_org = urlparse(org)
+        if parsed_org.netloc:
+            allowed_domains.append(parsed_org.netloc.lower())
+
+    is_allowed = False
+    
+    # Check Referer
+    if referer:
+        ref_domain = urlparse(referer).netloc.lower()
+        if any(dom in ref_domain for dom in allowed_domains):
+            is_allowed = True
+            
+    # Check Origin
+    if origin:
+        orig_domain = urlparse(origin).netloc.lower()
+        if any(dom in orig_domain for dom in allowed_domains):
+            is_allowed = True
+            
+    # Only enforce if Origin or Referer is supplied (prevents browser extensions/third-party domains from abusing)
+    if (referer or origin) and not is_allowed:
+        raise HTTPException(
+            status_code=403, 
+            detail="Access forbidden: This domain/origin is not authorized to use this API."
+        )
+
+
 @app.exception_handler(ExtractionError)
 async def extraction_error_handler(_: Any, exc: ExtractionError) -> JSONResponse:
     """Return a clean 400 response for extraction failures."""
@@ -78,11 +106,7 @@ async def extraction_error_handler(_: Any, exc: ExtractionError) -> JSONResponse
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def root() -> HTMLResponse:
-    """Serve a landing page that auto-generates the X-Temp-Token and fetches media."""
-    timestamp = str(int(time.time()))
-    sig = hmac.new(SERVER_SECRET.encode(), timestamp.encode(), hashlib.sha256).hexdigest()
-    temp_token = f"{sig}.{timestamp}"
-
+    """Serve the upgraded landing page with direct fetch client and Mobius credits."""
     return HTMLResponse(
         content=f"""<!DOCTYPE html>
 <html lang="en">
@@ -247,6 +271,21 @@ async def root() -> HTMLResponse:
             color: var(--primary);
             display: none;
         }}
+        .thank-you {{
+            margin-top: 2.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--surface-border);
+            font-size: 0.85rem;
+            color: var(--muted);
+        }}
+        .thank-you a {{
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+        }}
+        .thank-you a:hover {{
+            text-decoration: underline;
+        }}
     </style>
 </head>
 <body>
@@ -269,15 +308,17 @@ async def root() -> HTMLResponse:
         </div>
 
         <div class="links-row">
-            <a href="/docs">OpenAPI Docs</a>
+            <a href="/docs">Swagger UI Docs</a>
             <a href="/api/health">System Health</a>
+        </div>
+
+        <!-- Thank you section -->
+        <div class="thank-you">
+            Thank you for using our service! ❤️ Developed by <a href="https://t.me/JalebiBae" target="_blank">Mobius</a>
         </div>
     </div>
 
     <script>
-        // Temporary session token auto-injected by server
-        const sessionToken = "{temp_token}";
-
         async function fetchMedia() {{
             const postUrl = document.getElementById('postUrl').value.trim();
             const statusDiv = document.getElementById('status');
@@ -294,11 +335,7 @@ async def root() -> HTMLResponse:
             resContainer.style.display = 'none';
 
             try {{
-                const response = await fetch(`/api/fetch?url=${{encodeURIComponent(postUrl)}}`, {{
-                    headers: {{
-                        'X-Temp-Token': sessionToken
-                    }}
-                }});
+                const response = await fetch(`/api/fetch?url=${{encodeURIComponent(postUrl)}}`);
                 const data = await response.json();
                 
                 if (!response.ok) {{
@@ -374,33 +411,16 @@ async def fetch_media(
     url: str = Query(
         ...,
         description="Public Instagram post, Reel, or IGTV URL",
-        examples=["https://www.instagram.com/p/DabIUkpEzAV/"],
+        examples=["https://www.instagram.com/p/ABC123xyz/"],
     ),
-    x_temp_token: Optional[str] = Header(None, alias="X-Temp-Token"),
 ) -> InstagramPostResponse:
-    """Fetch media URLs and metadata for a public Instagram post. Requires a valid ephemeral X-Temp-Token."""
+    """Fetch media URLs and metadata for a public Instagram post. Access is restricted to authorized origins/referers."""
     log_request(request, status="fetch_start")
     
-    # 1. Validate X-Temp-Token header
-    if not x_temp_token or "." not in x_temp_token:
-        raise HTTPException(status_code=403, detail="Unauthorized: Session token missing or malformed.")
-        
-    sig, timestamp_str = x_temp_token.split(".", 1)
-    
-    # 2. Check if token expired (tokens expire after 10 minutes)
-    try:
-        ts = int(timestamp_str)
-        if abs(int(time.time()) - ts) > 600:
-            raise HTTPException(status_code=403, detail="Unauthorized: Session token expired.")
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid session timestamp.")
-        
-    # 3. Validate signature
-    expected_sig = hmac.new(SERVER_SECRET.encode(), timestamp_str.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected_sig):
-        raise HTTPException(status_code=403, detail="Unauthorized: Session signature verification failed.")
+    # Enforce Origin/Referer checks to protect the API from unauthorized hotlinking
+    validate_origin_and_referer(request)
 
-    # 4. Extract post media
+    # Extract post media
     try:
         result = extract_instagram_post(url, settings)
         log_request(request, status="fetch_ok")
@@ -432,25 +452,10 @@ async def proxy_media(
         ...,
         description="Direct URL of the media file to proxy",
     ),
-    x_temp_token: Optional[str] = Header(None, alias="X-Temp-Token"),
 ) -> Response:
-    """Proxy an Instagram media file to avoid CORS and referer issues. Requires a valid ephemeral X-Temp-Token."""
-    # 1. Validate X-Temp-Token header
-    if not x_temp_token or "." not in x_temp_token:
-        raise HTTPException(status_code=403, detail="Unauthorized: Session token missing or malformed.")
-        
-    sig, timestamp_str = x_temp_token.split(".", 1)
-    
-    try:
-        ts = int(timestamp_str)
-        if abs(int(time.time()) - ts) > 600:
-            raise HTTPException(status_code=403, detail="Unauthorized: Session token expired.")
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid session timestamp.")
-        
-    expected_sig = hmac.new(SERVER_SECRET.encode(), timestamp_str.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected_sig):
-        raise HTTPException(status_code=403, detail="Unauthorized: Session signature verification failed.")
+    """Proxy an Instagram media file to avoid CORS and referer issues. Access is restricted to authorized origins/referers."""
+    # Enforce Origin/Referer checks to protect the API from unauthorized hotlinking
+    validate_origin_and_referer(request)
 
     if not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid URL scheme.")
