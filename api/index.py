@@ -309,7 +309,12 @@ async def root() -> Response:
 
         <!-- Results Grid -->
         <div id="resultContainer" class="result-container">
-            <h3 style="text-align: left; font-weight: 600;">Media Extracted</h3>
+            <h3 style="text-align: left; font-weight: 600; margin-bottom: 1rem;">Media Extracted</h3>
+            <div id="postMeta" style="text-align: left; margin-bottom: 1.5rem; padding: 1.25rem; background: rgba(255,255,255,0.02); border-radius: 16px; border: 1px solid var(--surface-border); display: none;">
+                <h4 id="metaTitle" style="font-size: 1.15rem; font-weight: 700; margin-bottom: 0.25rem; background: linear-gradient(135deg, #fff 0%, var(--muted) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"></h4>
+                <p id="metaAuthor" style="font-size: 0.9rem; color: var(--primary); font-weight: 600; margin-bottom: 0.75rem;"></p>
+                <p id="metaCaption" style="font-size: 0.9rem; color: var(--muted); line-height: 1.5; white-space: pre-wrap; word-break: break-word;"></p>
+            </div>
             <div id="imageGrid" class="image-grid"></div>
         </div>
 
@@ -330,6 +335,10 @@ async def root() -> Response:
             const statusDiv = document.getElementById('status');
             const grid = document.getElementById('imageGrid');
             const resContainer = document.getElementById('resultContainer');
+            const metaDiv = document.getElementById('postMeta');
+            const metaTitle = document.getElementById('metaTitle');
+            const metaAuthor = document.getElementById('metaAuthor');
+            const metaCaption = document.getElementById('metaCaption');
 
             if (!postUrl) {{
                 alert('Please enter an Instagram post URL.');
@@ -339,6 +348,7 @@ async def root() -> Response:
             statusDiv.style.display = 'block';
             statusDiv.textContent = 'Fetching media from server...';
             resContainer.style.display = 'none';
+            metaDiv.style.display = 'none';
 
             try {{
                 const response = await fetch(`/api/fetch?url=${{encodeURIComponent(postUrl)}}`);
@@ -352,6 +362,12 @@ async def root() -> Response:
                 grid.innerHTML = '';
                 
                 if (data.media && data.media.length > 0) {{
+                    if (data.title || data.author || data.caption) {{
+                        metaTitle.textContent = data.title || '';
+                        metaAuthor.textContent = data.author ? `By ${data.author} (${data.username || ''})` : '';
+                        metaCaption.textContent = data.caption || '';
+                        metaDiv.style.display = 'block';
+                    }}
                     data.media.forEach((item, index) => {{
                         const card = document.createElement('div');
                         card.className = 'image-card';
