@@ -364,7 +364,7 @@ async def root() -> Response:
                 if (data.media && data.media.length > 0) {{
                     if (data.title || data.author || data.caption) {{
                         metaTitle.textContent = data.title || '';
-                        metaAuthor.textContent = data.author ? `By ${data.author} (${data.username || ''})` : '';
+                        metaAuthor.textContent = data.author ? 'By ' + data.author + ' (' + (data.username || '') + ')' : '';
                         metaCaption.textContent = data.caption || '';
                         metaDiv.style.display = 'block';
                     }}
