@@ -247,12 +247,18 @@ def fetch_instagram_page(url: str, settings: Settings) -> str:
         ExtractionError: If the request fails or returns a non-200 status.
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
     }
+
+    proxies = None
+    if settings.proxy_url:
+        proxies = {
+            "http": settings.proxy_url,
+            "https": settings.proxy_url,
+        }
 
     logger.info("Fetching Instagram page", extra={"url": url})
 
@@ -262,6 +268,7 @@ def fetch_instagram_page(url: str, settings: Settings) -> str:
             headers=headers,
             impersonate=settings.impersonate_browser,
             timeout=settings.request_timeout,
+            proxies=proxies,
         )
     except Exception as exc:
         logger.exception("Network request to Instagram failed")

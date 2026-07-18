@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 
@@ -13,6 +14,11 @@ class Settings(BaseSettings):
     request_timeout: int = int(os.getenv("REQUEST_TIMEOUT", "20"))
     proxy_timeout: int = int(os.getenv("PROXY_TIMEOUT", "30"))
     impersonate_browser: str = os.getenv("IMPERSONATE_BROWSER", "chrome120")
+    proxy_url: Optional[str] = os.getenv(
+        "PROXY_URL",
+        "http://rtxuydyo:ziapktcf4725@64.137.96.74:6641",
+    )
+
 
     # CORS settings
     cors_origins: str = os.getenv("CORS_ORIGINS", "*")
