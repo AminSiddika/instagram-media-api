@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_name: str = "Instagram Media API"
-    app_version: str = "1.0.0"
+    app_version: str = "1.1.0"
     app_description: str = "Professional API to extract high-resolution photos and videos from Instagram posts."
     debug: bool = False
 

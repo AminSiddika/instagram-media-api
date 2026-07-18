@@ -66,6 +66,28 @@ docker run -p 8000:8000 instagram-media-api
 curl "https://your-domain.com/api/fetch?url=https://www.instagram.com/p/ABC123xyz/"
 ```
 
+#### Example Response
+
+```json
+{
+  "shortcode": "Da5hgKLj4yQ",
+  "input_url": "https://www.instagram.com/p/Da5hgKLj4yQ/",
+  "type": "carousel",
+  "title": "Tasfiya on Instagram: \"বদলায় তো সবকিছু আমরা শুধু 'সময়'কে দোষ দিই 💔\"",
+  "author": "Tasfiya",
+  "username": "tasfiya4599",
+  "caption": "বদলায় তো সবকিছু আমরা শুধু 'সময়'কে দোষ দিই 💔",
+  "media_count": 5,
+  "media": [
+    {
+      "type": "photo",
+      "url": "https://scontent.cdninstagram.com/v/...",
+      "proxy_url": "/api/proxy?url=https%3A//scontent.cdninstagram.com/v/..."
+    }
+  ]
+}
+```
+
 ## Deployment
 
 ### Vercel
